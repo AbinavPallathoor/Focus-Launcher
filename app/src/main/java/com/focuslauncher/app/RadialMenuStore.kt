@@ -10,7 +10,14 @@ const val RADIAL_GROUP_BOTTOM = 0
 const val RADIAL_GROUP_UPPER = 1
 val RADIAL_GROUPS = listOf(RADIAL_GROUP_BOTTOM, RADIAL_GROUP_UPPER)
 
-/** Persists the app assigned to each slot of each of the two radial dial menus. */
+private const val KEY_VERTICAL_OFFSET_DP = "radial_dial_vertical_offset_dp"
+const val RADIAL_OFFSET_MIN_DP = 0f
+const val RADIAL_OFFSET_MAX_DP = 160f
+const val RADIAL_OFFSET_DEFAULT_DP = 0f
+
+/** Persists the app assigned to each slot of each of the two radial dial menus, and how far
+ * up both dials are nudged from their default anchor (a single shared offset — they're meant
+ * to move together, keeping the same spacing between them). */
 object RadialMenuStore {
 
     private fun prefs(context: Context) =
@@ -31,5 +38,12 @@ object RadialMenuStore {
         slots[index] = appKey
         val serialized = slots.joinToString(SLOT_SEPARATOR) { it ?: "" }
         prefs(context).edit().putString(key(group), serialized).apply()
+    }
+
+    fun getVerticalOffsetDp(context: Context): Float =
+        prefs(context).getFloat(KEY_VERTICAL_OFFSET_DP, RADIAL_OFFSET_DEFAULT_DP)
+
+    fun setVerticalOffsetDp(context: Context, offsetDp: Float) {
+        prefs(context).edit().putFloat(KEY_VERTICAL_OFFSET_DP, offsetDp.coerceIn(RADIAL_OFFSET_MIN_DP, RADIAL_OFFSET_MAX_DP)).apply()
     }
 }

@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +49,8 @@ import com.focuslauncher.app.ClassifierPerformanceStore
 import com.focuslauncher.app.ModelDownloader
 import com.focuslauncher.app.RADIAL_GROUP_BOTTOM
 import com.focuslauncher.app.RADIAL_GROUP_UPPER
+import com.focuslauncher.app.RADIAL_OFFSET_MAX_DP
+import com.focuslauncher.app.RADIAL_OFFSET_MIN_DP
 import com.focuslauncher.app.SLOTS_PER_RADIAL_GROUP
 import com.focuslauncher.app.SwipeGesture
 import kotlinx.coroutines.delay
@@ -67,6 +71,8 @@ fun SettingsScreen(
     onClearGesture: (gesture: SwipeGesture) -> Unit,
     hiddenApps: List<AppInfo>,
     onUnhideApp: (AppInfo) -> Unit,
+    dialVerticalOffsetDp: Float,
+    onDialVerticalOffsetChange: (Float) -> Unit,
     expenseTrackerEnabled: Boolean,
     onToggleExpenseTracker: () -> Unit,
     onOpenExpenseTracker: () -> Unit,
@@ -86,7 +92,7 @@ fun SettingsScreen(
             item { SectionHeader("Expense tracker") }
             item {
                 ToggleRow(
-                    label = "Track SMS expenses",
+                    label = "Expense tracker",
                     value = expenseTrackerEnabled,
                     onToggle = onToggleExpenseTracker,
                 )
@@ -111,6 +117,13 @@ fun SettingsScreen(
                     defaultLabel = "Swipe right — Contacts",
                     onTap = { onPickGesture(SwipeGesture.RIGHT) },
                     onClear = { onClearGesture(SwipeGesture.RIGHT) },
+                )
+            }
+            item { SectionHeader("Dial position") }
+            item {
+                DialPositionRow(
+                    offsetDp = dialVerticalOffsetDp,
+                    onCommit = onDialVerticalOffsetChange,
                 )
             }
             item { SectionHeader("Upper dial") }
@@ -402,6 +415,42 @@ private fun ClassifierPerformanceRow() {
         Text(text = "AI mode", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
         Box(modifier = Modifier.weight(1f))
         Text(text = mode.label, style = MaterialTheme.typography.bodyLarge, color = SubtextGrey)
+    }
+}
+
+/**
+ * Both dials move together off a single shared offset (they're meant to keep the same spacing
+ * between them, just shifted as a pair) — dragging updates the displayed value immediately for
+ * a smooth thumb, but only persists (and reflows the real on-screen dials) once released, so a
+ * mid-drag position isn't written to disk on every frame.
+ */
+@Composable
+private fun DialPositionRow(offsetDp: Float, onCommit: (Float) -> Unit) {
+    var value by remember(offsetDp) { mutableStateOf(offsetDp) }
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Text(text = "Dial position", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
+            Box(modifier = Modifier.weight(1f))
+            Text(
+                text = if (value <= 0f) "Lowest" else "+${value.toInt()}dp",
+                style = MaterialTheme.typography.bodyLarge,
+                color = SubtextGrey,
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = { value = it },
+            onValueChangeFinished = { onCommit(value) },
+            valueRange = RADIAL_OFFSET_MIN_DP..RADIAL_OFFSET_MAX_DP,
+            colors = SliderDefaults.colors(
+                thumbColor = PureWhite,
+                activeTrackColor = PureWhite,
+                inactiveTrackColor = SubtextGrey.copy(alpha = 0.3f),
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+        )
     }
 }
 

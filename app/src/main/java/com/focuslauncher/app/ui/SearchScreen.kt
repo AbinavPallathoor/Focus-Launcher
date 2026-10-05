@@ -51,8 +51,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
@@ -62,6 +66,8 @@ import com.focuslauncher.app.AppInfo
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import androidx.compose.animation.core.Animatable
+
+private const val SWIPE_DOWN_CLOSE_THRESHOLD_PX = 60f
 
 private fun filterApps(apps: List<AppInfo>, query: String): List<AppInfo> {
     if (query.isBlank()) return apps
@@ -123,10 +129,35 @@ fun SearchScreen(
 
     BackHandler(onBack = onClose)
 
+    // Swipe down to close — implemented via nested scroll rather than a raw drag detector so
+    // it cooperates with the results list's own scrolling instead of racing it: this only ever
+    // sees a nonzero delta once the list is already scrolled to the top and the drag continues
+    // past that (the list can't consume any more upward content), i.e. a genuine pull-down.
+    var overscrollY by remember { mutableStateOf(0f) }
+    var swipeClosed by remember { mutableStateOf(false) }
+    val nestedScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (swipeClosed) return Offset.Zero
+                if (source == NestedScrollSource.Drag && available.y > 0f) {
+                    overscrollY += available.y
+                    if (overscrollY > SWIPE_DOWN_CLOSE_THRESHOLD_PX) {
+                        swipeClosed = true
+                        onClose()
+                    }
+                    return available
+                }
+                overscrollY = 0f
+                return Offset.Zero
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(PureBlack)
+            .nestedScroll(nestedScrollConnection)
             .padding(horizontal = 24.dp, vertical = 48.dp)
     ) {
         TextField(

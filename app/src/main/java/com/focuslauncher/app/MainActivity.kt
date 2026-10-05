@@ -22,6 +22,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -92,6 +93,7 @@ private fun LauncherRoot() {
     var radialGroups by remember {
         mutableStateOf(RADIAL_GROUPS.associateWith { group -> RadialMenuStore.getSlotKeys(context, group) })
     }
+    var dialVerticalOffsetDp by remember { mutableStateOf(RadialMenuStore.getVerticalOffsetDp(context)) }
     var gestureApps by remember {
         mutableStateOf(
             mapOf(
@@ -105,36 +107,34 @@ private fun LauncherRoot() {
     var expenseTrackerEnabled by remember { mutableStateOf(ExpenseRepository.isEnabled(context)) }
     var expenseRefreshTick by remember { mutableStateOf(0) }
     var isProcessingDashboardCommand by remember { mutableStateOf(false) }
+    var isAddingTransaction by remember { mutableStateOf(false) }
+    var lastPayment by remember { mutableStateOf(LastPaymentStore.get(context)) }
     // Cheap no-op queries against empty tables when the tracker is off, so it's simpler to
     // always compute these than to thread an enabled check through every call site.
     val todayExpenseTotal = remember(expenseRefreshTick) { ExpenseRepository.getTodayTotal(context) }
     val monthlyExpenseTotal = remember(expenseRefreshTick) { ExpenseRepository.getMonthTotal(context) }
     val categoryTotalsMonth = remember(expenseRefreshTick) { ExpenseRepository.getCategoryTotalsMonth(context) }
-    val untaggedExpenseCount = remember(expenseRefreshTick) { ExpenseRepository.getUnclassifiedCounterparts(context).size }
-    val recentTransactionsForFeed = remember(expenseRefreshTick) { ExpenseRepository.getRecentTransactions(context, limit = 4) }
     val coroutineScope = rememberCoroutineScope()
     val smsPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        // READ_SMS is the one that actually gates sync/classification — RECEIVE_SMS (for live
-        // updates the moment a new message arrives) is requested alongside it but optional:
-        // the feature still works via resume-time sync if that one alone gets denied.
+        // READ_SMS is what the passive "last paid" reminder's resume-time inbox scan needs;
+        // RECEIVE_SMS (for live updates the moment a new message arrives) is requested
+        // alongside it but optional — the reminder still works via that scan if denied.
         if (results[Manifest.permission.READ_SMS] == true) {
             ExpenseRepository.setEnabled(context, true)
             expenseTrackerEnabled = true
-            ExpenseRepository.syncSms(context)
-            expenseRefreshTick++
+            LastPaymentStore.refreshFromInbox(context)
+            lastPayment = LastPaymentStore.get(context)
         }
     }
 
     fun openExpenseTracker(returnTo: Screen) {
-        ExpenseRepository.syncSms(context)
-        expenseRefreshTick++
         screen = Screen.ExpenseTracker(returnTo)
     }
 
-    // Both classifying and correcting a transaction run real (slow) LLM inference — always off
-    // the main thread, never directly in a click handler.
+    // Both correcting and adding a transaction run real (slow) LLM inference — always off the
+    // main thread, never directly in a click handler.
     fun correctTransaction(transactionId: Long, note: String) {
         coroutineScope.launch {
             withContext(Dispatchers.Default) {
@@ -144,13 +144,42 @@ private fun LauncherRoot() {
         }
     }
 
-    // No LLM involved — a plain SQLite write — but still off the main thread for consistency
-    // with every other repository write.
-    fun confirmTransaction(transactionId: Long) {
+    // Plain SQLite writes, no LLM — still off the main thread for consistency with every
+    // other repository write.
+    fun renameTransaction(transactionId: Long, newName: String) {
         coroutineScope.launch {
             withContext(Dispatchers.Default) {
-                ExpenseRepository.confirmTransaction(context, transactionId)
+                ExpenseRepository.renameTransaction(context, transactionId, newName)
             }
+            expenseRefreshTick++
+        }
+    }
+
+    fun modifyTransactionAmount(transactionId: Long, newAmount: Double) {
+        coroutineScope.launch {
+            withContext(Dispatchers.Default) {
+                ExpenseRepository.modifyTransactionAmount(context, transactionId, newAmount)
+            }
+            expenseRefreshTick++
+        }
+    }
+
+    fun deleteTransaction(transactionId: Long) {
+        coroutineScope.launch {
+            withContext(Dispatchers.Default) {
+                ExpenseRepository.deleteTransaction(context, transactionId)
+            }
+            expenseRefreshTick++
+        }
+    }
+
+    fun addTransaction(description: String) {
+        isAddingTransaction = true
+        coroutineScope.launch {
+            withContext(Dispatchers.Default) {
+                ExpenseRepository.addTransactionFromDescription(context, description)
+            }
+            isAddingTransaction = false
             expenseRefreshTick++
         }
     }
@@ -168,6 +197,11 @@ private fun LauncherRoot() {
 
     fun refreshApps() {
         allApps = AppRepository.getInstalledApps(context)
+    }
+
+    fun setDialVerticalOffset(offsetDp: Float) {
+        RadialMenuStore.setVerticalOffsetDp(context, offsetDp)
+        dialVerticalOffsetDp = RadialMenuStore.getVerticalOffsetDp(context)
     }
 
     fun refreshHidden() {
@@ -199,16 +233,10 @@ private fun LauncherRoot() {
                 refreshRadialGroups()
                 refreshGestureApps()
                 if (expenseTrackerEnabled) {
-                    ExpenseRepository.syncSms(context)
-                    expenseRefreshTick++
-                    // Classification runs real LLM inference — off the main thread, and after
-                    // the (fast) sync above so the UI already reflects the new SMS immediately.
-                    coroutineScope.launch {
-                        withContext(Dispatchers.Default) {
-                            ExpenseRepository.classifyUnknownTransactions(context)
-                        }
-                        expenseRefreshTick++
-                    }
+                    // Catches the case where the app wasn't running to see the live broadcast
+                    // (first install, permission just granted) — cheap single-row inbox scan.
+                    LastPaymentStore.refreshFromInbox(context)
+                    lastPayment = LastPaymentStore.get(context)
                 }
                 screen = Screen.Home
             }
@@ -256,11 +284,11 @@ private fun LauncherRoot() {
                     todayExpenseTotal = todayExpenseTotal,
                     monthlyExpenseTotal = monthlyExpenseTotal,
                     categoryTotalsMonth = categoryTotalsMonth,
-                    untaggedExpenseCount = untaggedExpenseCount,
                     onOpenExpenseTracker = { openExpenseTracker(Screen.Home) },
-                    recentTransactions = recentTransactionsForFeed,
-                    onCorrectTransaction = { transactionId, note -> correctTransaction(transactionId, note) },
-                    onConfirmTransaction = { transactionId -> confirmTransaction(transactionId) },
+                    lastPayment = lastPayment,
+                    isAddingTransaction = isAddingTransaction,
+                    onAddTransaction = { description -> addTransaction(description) },
+                    dialVerticalOffset = dialVerticalOffsetDp.dp,
                 )
             }
             is Screen.Settings -> {
@@ -296,6 +324,8 @@ private fun LauncherRoot() {
                         refreshGestureApps()
                     },
                     hiddenApps = hiddenAppsList,
+                    dialVerticalOffsetDp = dialVerticalOffsetDp,
+                    onDialVerticalOffsetChange = { offsetDp -> setDialVerticalOffset(offsetDp) },
                     onUnhideApp = { app ->
                         HiddenAppsStore.setHidden(context, app.key, false)
                         refreshHidden()
@@ -308,8 +338,8 @@ private fun LauncherRoot() {
                         } else if (ExpenseRepository.hasSmsPermission(context)) {
                             ExpenseRepository.setEnabled(context, true)
                             expenseTrackerEnabled = true
-                            ExpenseRepository.syncSms(context)
-                            expenseRefreshTick++
+                            LastPaymentStore.refreshFromInbox(context)
+                            lastPayment = LastPaymentStore.get(context)
                         } else {
                             smsPermissionLauncher.launch(
                                 arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS)
@@ -325,16 +355,16 @@ private fun LauncherRoot() {
                 val categoryTotals = remember(expenseRefreshTick) { ExpenseRepository.getCategoryTotalsMonth(context) }
                 val dailyTotals = remember(expenseRefreshTick) { ExpenseRepository.getDailyTotals(context, 14) }
                 val recentTransactions = remember(expenseRefreshTick) { ExpenseRepository.getRecentTransactions(context) }
-                val debtLedger = remember(expenseRefreshTick) { ExpenseRepository.getDebtLedger(context) }
                 ExpenseTrackerScreen(
                     todayTotal = todayTotal,
                     categoryTotals = categoryTotals,
                     dailyTotals = dailyTotals,
                     recentTransactions = recentTransactions,
-                    debtLedger = debtLedger,
                     isProcessingCommand = isProcessingDashboardCommand,
                     onCorrectTransaction = { transactionId, note -> correctTransaction(transactionId, note) },
-                    onConfirmTransaction = { transactionId -> confirmTransaction(transactionId) },
+                    onRenameTransaction = { transactionId, newName -> renameTransaction(transactionId, newName) },
+                    onModifyTransactionAmount = { transactionId, newAmount -> modifyTransactionAmount(transactionId, newAmount) },
+                    onDeleteTransaction = { transactionId -> deleteTransaction(transactionId) },
                     onCommand = { command -> runDashboardCommand(command) },
                     onClose = { screen = currentScreen.returnTo },
                 )

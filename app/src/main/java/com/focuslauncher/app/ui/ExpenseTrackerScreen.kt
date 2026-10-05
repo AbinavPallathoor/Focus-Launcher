@@ -2,13 +2,17 @@ package com.focuslauncher.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
@@ -17,6 +21,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,14 +39,21 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PriceChange
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Subscriptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,23 +62,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focuslauncher.app.ExpenseCategory
 import com.focuslauncher.app.ExpenseRepository
-import com.focuslauncher.app.ResolvedBy
-import com.focuslauncher.app.TransactionKind
 import com.focuslauncher.app.transactionTag
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 
 private fun formatAmount(amount: Double): String = "₹${"%.0f".format(amount)}"
 
@@ -79,10 +98,10 @@ internal fun categoryIcon(category: ExpenseCategory): ImageVector = when (catego
 }
 
 /**
- * SMS-derived spend dashboard: today's total, a per-category breakdown, a line graph of the
- * last two weeks, who owes who, and the recent transaction log. Every transaction is tagged
- * automatically by the on-device classifier; tapping one here opens an inline prompt to retag it
- * directly, the same correction path the home screen's terminal feed uses.
+ * The manually-logged spend dashboard: today's total, a per-category breakdown, a line graph of
+ * the last two weeks, and the transaction log. Tapping a transaction here opens an inline prompt
+ * to retag it directly; holding one down reveals a Rename/Modify price/Delete action panel for
+ * direct edits that don't need the model.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -91,14 +110,21 @@ fun ExpenseTrackerScreen(
     categoryTotals: Map<ExpenseCategory, Double>,
     dailyTotals: List<ExpenseRepository.DayTotal>,
     recentTransactions: List<ExpenseRepository.Transaction>,
-    debtLedger: List<ExpenseRepository.PersonBalance>,
     isProcessingCommand: Boolean,
     onCorrectTransaction: (transactionId: Long, note: String) -> Unit,
-    onConfirmTransaction: (transactionId: Long) -> Unit,
+    onRenameTransaction: (transactionId: Long, newName: String) -> Unit,
+    onModifyTransactionAmount: (transactionId: Long, newAmount: Double) -> Unit,
+    onDeleteTransaction: (transactionId: Long) -> Unit,
     onCommand: (String) -> Unit,
     onClose: () -> Unit,
 ) {
     BackHandler(onBack = onClose)
+
+    var contextMenuTransactionId by remember { mutableStateOf<Long?>(null) }
+    var renamingTransaction by remember { mutableStateOf<ExpenseRepository.Transaction?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var modifyingPriceTransaction by remember { mutableStateOf<ExpenseRepository.Transaction?>(null) }
+    var priceText by remember { mutableStateOf("") }
 
     LazyColumn(
         modifier = Modifier
@@ -141,13 +167,6 @@ fun ExpenseTrackerScreen(
             }
         }
 
-        if (debtLedger.isNotEmpty()) {
-            item { SectionHeader("Owing") }
-            items(debtLedger, key = { it.name }) { person ->
-                DebtRow(person, modifier = Modifier.animateItemPlacement(tween(220)))
-            }
-        }
-
         item { SectionHeader("By category") }
         item {
             Column(modifier = Modifier.padding(top = 4.dp)) {
@@ -178,44 +197,115 @@ fun ExpenseTrackerScreen(
             items(recentTransactions, key = { it.id }) { transaction ->
                 TransactionRow(
                     transaction = transaction,
+                    isMenuOpen = contextMenuTransactionId == transaction.id,
                     onCorrect = { note -> onCorrectTransaction(transaction.id, note) },
-                    onConfirm = { onConfirmTransaction(transaction.id) },
+                    onLongPress = { contextMenuTransactionId = transaction.id },
+                    onDismissMenu = { contextMenuTransactionId = null },
+                    onRename = {
+                        contextMenuTransactionId = null
+                        renameText = transaction.counterpartName
+                        renamingTransaction = transaction
+                    },
+                    onModifyPrice = {
+                        contextMenuTransactionId = null
+                        priceText = "%.0f".format(transaction.amount)
+                        modifyingPriceTransaction = transaction
+                    },
+                    onDelete = {
+                        contextMenuTransactionId = null
+                        onDeleteTransaction(transaction.id)
+                    },
                     modifier = Modifier.animateItemPlacement(tween(220)),
                 )
             }
         }
     }
-}
 
-@Composable
-private fun DebtRow(person: ExpenseRepository.PersonBalance, modifier: Modifier = Modifier) {
-    val owesUser = person.netAmount > 0
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-    ) {
-        Text(
-            text = person.name,
-            style = MaterialTheme.typography.bodyMedium,
-            color = PureWhite,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+    renamingTransaction?.let { transaction ->
+        AlertDialog(
+            onDismissRequest = { renamingTransaction = null },
+            containerColor = PureBlack,
+            tonalElevation = 0.dp,
+            title = { Text("Rename", color = PureWhite) },
+            text = {
+                TextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.Unspecified),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = PureBlack,
+                        unfocusedContainerColor = PureBlack,
+                        focusedTextColor = PureWhite,
+                        unfocusedTextColor = PureWhite,
+                        cursorColor = PureWhite,
+                        focusedIndicatorColor = SubtextGrey,
+                        unfocusedIndicatorColor = SubtextGrey.copy(alpha = 0.4f),
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRenameTransaction(transaction.id, renameText)
+                    renamingTransaction = null
+                }) {
+                    Text("Save", color = PureWhite)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingTransaction = null }) {
+                    Text("Cancel", color = SubtextGrey)
+                }
+            },
         )
-        Text(
-            text = if (owesUser) "owes you ${formatAmount(person.netAmount)}" else "you owe ${formatAmount(-person.netAmount)}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = SubtextGrey,
+    }
+
+    modifyingPriceTransaction?.let { transaction ->
+        AlertDialog(
+            onDismissRequest = { modifyingPriceTransaction = null },
+            containerColor = PureBlack,
+            tonalElevation = 0.dp,
+            title = { Text("Modify price", color = PureWhite) },
+            text = {
+                TextField(
+                    value = priceText,
+                    onValueChange = { priceText = it },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Color.Unspecified),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = PureBlack,
+                        unfocusedContainerColor = PureBlack,
+                        focusedTextColor = PureWhite,
+                        unfocusedTextColor = PureWhite,
+                        cursorColor = PureWhite,
+                        focusedIndicatorColor = SubtextGrey,
+                        unfocusedIndicatorColor = SubtextGrey.copy(alpha = 0.4f),
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    priceText.toDoubleOrNull()?.let { onModifyTransactionAmount(transaction.id, it) }
+                    modifyingPriceTransaction = null
+                }) {
+                    Text("Save", color = PureWhite)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { modifyingPriceTransaction = null }) {
+                    Text("Cancel", color = SubtextGrey)
+                }
+            },
         )
     }
 }
 
 /**
- * One free-text instruction to the on-device model, which can add a transaction the SMS
- * pipeline never saw (cash, say), delete one, or retag one — interpreted against the dashboard's
- * own recent list. Clears immediately on submit; "thinking…" stands in for the tag/total values
- * briefly changing underneath it rather than blocking the input itself.
+ * One free-text instruction to the on-device model, which can add a transaction (cash, say),
+ * delete one, or retag one — interpreted against the dashboard's own recent list. Clears
+ * immediately on submit; "thinking…" stands in for the tag/total values briefly changing
+ * underneath it rather than blocking the input itself.
  */
 @Composable
 private fun DashboardCommandBar(
@@ -381,54 +471,108 @@ private fun SpendingLineGraph(dailyTotals: List<ExpenseRepository.DayTotal>, mod
     }
 }
 
+private const val HOLD_BORDER_RISE_MS = 500
+private const val HOLD_BORDER_FADE_MS = 180
+private val ROW_ICON_PANEL_START_MARGIN = 22.dp // opaque buffer so text never cuts off right at the line
+private val ROW_ICON_PANEL_END_PADDING = 12.dp
+private val ROW_ICON_GAP = 18.dp
+private val ROW_DIVIDER_GAP = 14.dp
+
 /**
- * Tapping a row opens an inline "what was this actually?" prompt right below it — the same
- * free-text retagging the home screen's terminal feed offers, available here too for anything
- * that needs fixing after the fact rather than the moment it shows up.
+ * Tapping a row opens an inline "what was this actually?" prompt right below it, for fixing a
+ * transaction after the fact via the model. Holding one down instead reveals an icon action
+ * panel inline on the right — Rename / Modify price / Delete, direct edits with no model call —
+ * matching the same hold-to-reveal affordance search results use for app actions.
  */
 @Composable
 private fun TransactionRow(
     transaction: ExpenseRepository.Transaction,
+    isMenuOpen: Boolean,
     onCorrect: (String) -> Unit,
-    onConfirm: () -> Unit,
+    onLongPress: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onRename: () -> Unit,
+    onModifyPrice: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val dateFormat = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
     var expanded by remember { mutableStateOf(false) }
     var input by remember { mutableStateOf("") }
+    val holdProgress = remember { Animatable(0f) }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
-            .padding(vertical = 8.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = transaction.counterpartName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PureWhite,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                val tag = transactionTag(transaction.kind, transaction.category)
-                Text(
-                    text = "$tag · ${dateFormat.format(Date(transaction.timestamp))}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = SubtextGrey,
-                )
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(PureBlack)
+                .border(BorderStroke(1.5.dp, PureWhite.copy(alpha = holdProgress.value)))
+                .pointerInput(transaction.id) {
+                    detectTapGestures(
+                        onPress = {
+                            coroutineScope {
+                                val riseJob = launch {
+                                    holdProgress.snapTo(0f)
+                                    holdProgress.animateTo(1f, tween(HOLD_BORDER_RISE_MS, easing = LinearEasing))
+                                }
+                                tryAwaitRelease()
+                                riseJob.cancel()
+                                launch { holdProgress.animateTo(0f, tween(HOLD_BORDER_FADE_MS)) }
+                            }
+                        },
+                        onTap = { if (isMenuOpen) onDismissMenu() else expanded = !expanded },
+                        onLongPress = { onLongPress() },
+                    )
+                }
+                .padding(vertical = 8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = transaction.counterpartName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = PureWhite,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                    )
+                    val tag = transactionTag(transaction.kind, transaction.category)
+                    Text(
+                        text = "$tag · ${dateFormat.format(Date(transaction.timestamp))}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SubtextGrey,
+                    )
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(text = formatAmount(transaction.amount), style = MaterialTheme.typography.bodyMedium, color = PureWhite)
             }
-            Spacer(modifier = Modifier.width(12.dp))
-            Text(text = formatAmount(transaction.amount), style = MaterialTheme.typography.bodyMedium, color = PureWhite)
-            // Nothing to confirm yet if the classifier hasn't produced a guess at all — same
-            // guard as the home screen's terminal feed.
-            if (transaction.kind != TransactionKind.UNKNOWN) {
-                ConfirmButton(
-                    confirmed = transaction.resolvedBy == ResolvedBy.USER,
-                    onConfirm = onConfirm,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
+
+            androidx.compose.animation.AnimatedVisibility(
+                visible = isMenuOpen,
+                enter = fadeIn(tween(200)) + slideInHorizontally(tween(220)) { fullWidth -> fullWidth },
+                exit = fadeOut(tween(150)) + slideOutHorizontally(tween(180)) { fullWidth -> fullWidth },
+                modifier = Modifier.align(Alignment.CenterEnd),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .background(PureBlack)
+                        .padding(vertical = 8.dp)
+                        .padding(end = ROW_ICON_PANEL_END_PADDING),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Spacer(modifier = Modifier.width(ROW_ICON_PANEL_START_MARGIN))
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .height(22.dp)
+                            .background(PureWhite.copy(alpha = 0.4f))
+                    )
+                    Spacer(modifier = Modifier.width(ROW_DIVIDER_GAP))
+                    Row(horizontalArrangement = Arrangement.spacedBy(ROW_ICON_GAP), verticalAlignment = Alignment.CenterVertically) {
+                        RowActionIcon(Icons.Filled.Edit, "Rename", onRename)
+                        RowActionIcon(Icons.Filled.PriceChange, "Modify price", onModifyPrice)
+                        RowActionIcon(Icons.Filled.Delete, "Delete", onDelete)
+                    }
+                }
             }
         }
         if (expanded) {
@@ -466,4 +610,16 @@ private fun TransactionRow(
             }
         }
     }
+}
+
+@Composable
+private fun RowActionIcon(icon: ImageVector, contentDescription: String, onClick: () -> Unit) {
+    Icon(
+        imageVector = icon,
+        contentDescription = contentDescription,
+        tint = PureWhite,
+        modifier = Modifier
+            .size(22.dp)
+            .clickable(onClick = onClick)
+    )
 }

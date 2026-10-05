@@ -57,10 +57,6 @@ object CalendarRepository {
         }
     }
 
-    /** "Oct 5" — short enough to sit on its own line without wrapping or truncating. */
-    fun formatDate(event: UpcomingEvent): String =
-        SimpleDateFormat("MMM d", Locale.getDefault()).format(event.startMillis)
-
     /** "3:00 PM – 4:00 PM", or "All day" for an all-day event. */
     fun formatTimeRange(event: UpcomingEvent): String {
         if (event.allDay) return "All day"

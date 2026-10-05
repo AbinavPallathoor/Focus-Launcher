@@ -7,7 +7,7 @@
 root ::= "{" ws "\"action\":" ws action "," ws "\"targetIndex\":" ws int "," ws "\"counterpartName\":" ws string "," ws "\"amount\":" ws number "," ws "\"kind\":" ws kind "," ws "\"category\":" ws category ws "}"
 
 action ::= "\"ADD\"" | "\"REMOVE\"" | "\"MODIFY\"" | "\"NONE\""
-kind ::= "\"EXPENSE\"" | "\"LENT\"" | "\"BORROWED\"" | "\"REPAYMENT_IN\"" | "\"REPAYMENT_OUT\"" | "\"INCOME\""
+kind ::= "\"EXPENSE\"" | "\"INCOME\""
 category ::= "\"FOOD\"" | "\"TRANSPORT\"" | "\"ESSENTIALS\"" | "\"EXTRAS\"" | "\"SUBSCRIPTION\"" | "null"
 
 int ::= "0" | [1-9] [0-9]?

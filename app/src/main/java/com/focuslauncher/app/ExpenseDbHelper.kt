@@ -5,14 +5,15 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
 private const val DB_NAME = "expenses.db"
-private const val DB_VERSION = 3
+private const val DB_VERSION = 4
 
 /**
  * Plain SQLite (no Room) — consistent with the rest of this app. Each version bump so far is a
  * full rebuild, not a migration — there's no sensible mapping from the old shape to the new one,
- * so upgrading just drops every table and recreates them. Version 3 drops the MCQ pending-
- * questions queue: transactions are now auto-tagged immediately with no follow-up questions, and
- * a wrong guess is corrected with a free-text note instead.
+ * so upgrading just drops every table and recreates them. Version 4 drops automatic SMS
+ * classification entirely: transactions are only ever created by the user directly (the home
+ * screen's quick-add prompt or the dashboard's command bar), so the memory/few-shot table is
+ * gone too.
  */
 class ExpenseDbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
@@ -30,21 +31,6 @@ class ExpenseDbHelper(context: Context) : SQLiteOpenHelper(context, DB_NAME, nul
                 category TEXT,
                 confidence REAL NOT NULL DEFAULT 0,
                 resolved_by TEXT NOT NULL DEFAULT 'UNKNOWN'
-            )
-            """.trimIndent()
-        )
-        // The few-shot memory: every confirmed answer is both an instant-lookup cache for the
-        // next transaction from the same counterpart and a labeled example fed to the LLM
-        // prompt for the next genuinely-new one.
-        db.execSQL(
-            """
-            CREATE TABLE memory (
-                normalized_name TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                category TEXT,
-                is_person INTEGER NOT NULL DEFAULT 0,
-                confirm_count INTEGER NOT NULL DEFAULT 1,
-                updated_at INTEGER NOT NULL
             )
             """.trimIndent()
         )

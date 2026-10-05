@@ -1,17 +1,11 @@
 package com.focuslauncher.app
 
 /**
- * What a transaction actually represents, beyond its raw debit/credit direction — this is the
- * thing the memory lookup / on-device LLM is trying to figure out. A plain category (Food,
- * Transport, ...) only applies to EXPENSE; the other kinds feed the per-person debt ledger
- * instead of the category breakdown.
+ * What a transaction actually represents, beyond its raw debit/credit direction. A plain
+ * category (Food, Transport, ...) only applies to EXPENSE.
  */
 enum class TransactionKind(val label: String) {
     EXPENSE("Expense"),
-    LENT("Lent"),
-    BORROWED("Borrowed"),
-    REPAYMENT_IN("Repayment received"),
-    REPAYMENT_OUT("Repayment sent"),
     INCOME("Income"),
     UNKNOWN("Unclassified");
 
@@ -23,7 +17,7 @@ enum class TransactionKind(val label: String) {
 
 /** Who/what resolved a transaction's kind/category. */
 enum class ResolvedBy {
-    MEMORY, LLM, USER, UNKNOWN;
+    USER, UNKNOWN;
 
     companion object {
         fun fromStorage(value: String?): ResolvedBy =
@@ -31,14 +25,10 @@ enum class ResolvedBy {
     }
 }
 
-/** The single short tag shown in the terminal feed: the category for an EXPENSE, the kind for
- * anything else (both repayment directions collapse to one tag — the feed row's own debit/
- * credit amount already carries the direction). */
+/** The single short tag shown for a transaction: the category for an EXPENSE, the kind for
+ * anything else. */
 fun transactionTag(kind: TransactionKind, category: ExpenseCategory?): String = when (kind) {
     TransactionKind.EXPENSE -> category?.label?.lowercase() ?: "expense"
-    TransactionKind.LENT -> "lent"
-    TransactionKind.BORROWED -> "borrowed"
-    TransactionKind.REPAYMENT_IN, TransactionKind.REPAYMENT_OUT -> "repayment"
     TransactionKind.INCOME -> "income"
     TransactionKind.UNKNOWN -> "unsorted"
 }

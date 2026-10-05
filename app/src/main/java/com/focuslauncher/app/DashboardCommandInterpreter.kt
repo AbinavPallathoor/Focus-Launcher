@@ -63,10 +63,7 @@ object DashboardCommandInterpreter {
             - NONE: the instruction doesn't clearly map to any of the above. Set targetIndex
               to 0.
 
-            Valid kinds: EXPENSE (ordinary spend), LENT (user paid for someone else, they owe
-            the user back), BORROWED (someone covered the user, user owes them), REPAYMENT_IN
-            (a person paying the user back), REPAYMENT_OUT (user paying a person back), INCOME
-            (salary, refund, allowance, unrelated to a person).
+            Valid kinds: EXPENSE (ordinary spend), INCOME (salary, refund, allowance).
             Valid categories (EXPENSE only, else null): FOOD, TRANSPORT, ESSENTIALS, EXTRAS,
             SUBSCRIPTION. Coffee, meals, snacks, groceries are FOOD, not EXTRAS.
 
