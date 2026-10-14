@@ -28,6 +28,12 @@ android {
         }
     }
 
+    lint {
+        // The release-time lint pass crashes on some local JDK setups and blocks
+        // `assembleRelease` entirely; run `gradle lint` explicitly when wanted.
+        checkReleaseBuilds = false
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
