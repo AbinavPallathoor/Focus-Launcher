@@ -1,6 +1,5 @@
 package com.focuslauncher.app.ui
 
-import android.app.DownloadManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -27,7 +26,6 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,22 +36,17 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.focuslauncher.app.AppInfo
-import com.focuslauncher.app.ClassifierPerformanceMode
-import com.focuslauncher.app.ClassifierPerformanceStore
-import com.focuslauncher.app.ModelDownloader
 import com.focuslauncher.app.RADIAL_GROUP_BOTTOM
 import com.focuslauncher.app.RADIAL_GROUP_UPPER
 import com.focuslauncher.app.RADIAL_OFFSET_MAX_DP
 import com.focuslauncher.app.RADIAL_OFFSET_MIN_DP
 import com.focuslauncher.app.SLOTS_PER_RADIAL_GROUP
 import com.focuslauncher.app.SwipeGesture
-import kotlinx.coroutines.delay
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -73,9 +66,6 @@ fun SettingsScreen(
     onUnhideApp: (AppInfo) -> Unit,
     dialVerticalOffsetDp: Float,
     onDialVerticalOffsetChange: (Float) -> Unit,
-    expenseTrackerEnabled: Boolean,
-    onToggleExpenseTracker: () -> Unit,
-    onOpenExpenseTracker: () -> Unit,
     onClose: () -> Unit,
 ) {
     BackHandler(onBack = onClose)
@@ -89,19 +79,6 @@ fun SettingsScreen(
         Text(text = "Settings", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
 
         LazyColumn(modifier = Modifier.padding(top = 12.dp)) {
-            item { SectionHeader("Expense tracker") }
-            item {
-                ToggleRow(
-                    label = "Expense tracker",
-                    value = expenseTrackerEnabled,
-                    onToggle = onToggleExpenseTracker,
-                )
-            }
-            if (expenseTrackerEnabled) {
-                item { ActionRow(label = "Open dashboard", onTap = onOpenExpenseTracker) }
-                item { ModelDownloadRow() }
-                item { ClassifierPerformanceRow() }
-            }
             item { SectionHeader("Gestures") }
             item {
                 SlotRow(
@@ -298,126 +275,6 @@ private fun PreviewNode(
     }
 }
 
-@Composable
-private fun ToggleRow(label: String, value: Boolean, onToggle: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle)
-            .padding(vertical = 10.dp),
-    ) {
-        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = PureWhite)
-        Box(modifier = Modifier.weight(1f))
-        Text(
-            text = if (value) "On" else "Off",
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (value) PureWhite else SubtextGrey,
-        )
-    }
-}
-
-/**
- * The on-device classifier's model, fetched directly from Hugging Face via DownloadManager (no
- * login/token needed — the repo is public). Polls progress every 500ms only while a download is
- * actually in flight, so this is cheap to leave mounted the rest of the time.
- */
-@Composable
-private fun ModelDownloadRow() {
-    val context = LocalContext.current
-    var modelReady by remember { mutableStateOf(ModelDownloader.isModelReady(context)) }
-    var progress by remember { mutableStateOf(ModelDownloader.currentProgress(context)) }
-
-    // Keyed on Unit (never restarts) rather than on a value this same loop mutates — keying
-    // it off e.g. "isActive" would cancel this coroutine the instant it flips isActive to
-    // false, right before the line that actually records completion ever runs.
-    LaunchedEffect(Unit) {
-        while (!modelReady) {
-            val latest = ModelDownloader.currentProgress(context)
-            progress = latest
-            val inFlight = latest != null && latest.status != DownloadManager.STATUS_SUCCESSFUL
-            if (!inFlight) modelReady = ModelDownloader.isModelReady(context)
-            delay(if (latest?.status == DownloadManager.STATUS_RUNNING) 500 else 1500)
-        }
-    }
-
-    val status = progress?.status
-    val isRunning = status == DownloadManager.STATUS_RUNNING
-    val isQueued = status == DownloadManager.STATUS_PENDING
-    // A download the user can cancel/retry out of — anything that's been enqueued and isn't
-    // already sitting as a finished file.
-    val isInFlight = status != null && !modelReady
-    val reason = progress?.reasonLabel()
-
-    val label = when {
-        modelReady -> "AI model ready"
-        isRunning -> "Downloading AI model… ${((progress?.fraction ?: 0f) * 100).toInt()}%"
-        isQueued -> "Download queued…"
-        reason != null -> "Download stalled — $reason"
-        isInFlight -> "Preparing download…"
-        else -> "Download AI model (1.0 GB)"
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (modelReady) PureWhite else SubtextGrey,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .weight(1f)
-                .clickable(enabled = !modelReady && !isInFlight) {
-                    ModelDownloader.startDownload(context)
-                    progress = ModelDownloader.currentProgress(context)
-                }
-        )
-        if (isInFlight) {
-            Text(
-                text = "Cancel",
-                style = MaterialTheme.typography.bodyLarge,
-                color = PureWhite,
-                modifier = Modifier
-                    .padding(start = 12.dp)
-                    .clickable {
-                        ModelDownloader.cancelDownload(context)
-                        progress = null
-                    }
-            )
-        }
-    }
-}
-
-/**
- * Cycles the classifier's CPU thread count through three presets. The emulator used during
- * development stays slow regardless — real phones have real cores to spend, and this is the one
- * lever that actually maps "how fast the device is" to "how fast classification runs" without
- * touching output quality (greedy, grammar-constrained decoding doesn't have a "thinks harder"
- * knob the way a bigger model would).
- */
-@Composable
-private fun ClassifierPerformanceRow() {
-    val context = LocalContext.current
-    var mode by remember { mutableStateOf(ClassifierPerformanceStore.getMode(context)) }
-    val modes = ClassifierPerformanceMode.entries
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-                val next = modes[(modes.indexOf(mode) + 1) % modes.size]
-                ClassifierPerformanceStore.setMode(context, next)
-                mode = next
-            }
-            .padding(vertical = 10.dp),
-    ) {
-        Text(text = "AI mode", style = MaterialTheme.typography.bodyLarge, color = PureWhite)
-        Box(modifier = Modifier.weight(1f))
-        Text(text = mode.label, style = MaterialTheme.typography.bodyLarge, color = SubtextGrey)
-    }
-}
-
 /**
  * Both dials move together off a single shared offset (they're meant to keep the same spacing
  * between them, just shifted as a pair) — dragging updates the displayed value immediately for
@@ -452,19 +309,6 @@ private fun DialPositionRow(offsetDp: Float, onCommit: (Float) -> Unit) {
                 .padding(top = 4.dp),
         )
     }
-}
-
-@Composable
-private fun ActionRow(label: String, onTap: () -> Unit) {
-    Text(
-        text = label,
-        style = MaterialTheme.typography.bodyLarge,
-        color = PureWhite,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onTap)
-            .padding(vertical = 10.dp)
-    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)

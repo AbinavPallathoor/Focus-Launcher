@@ -1,13 +1,12 @@
 package com.focuslauncher.app
 
-import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -15,6 +14,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,7 +28,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.focuslauncher.app.ui.ExpenseTrackerScreen
 import com.focuslauncher.app.ui.FocusLauncherTheme
 import com.focuslauncher.app.ui.HomeScreen
 import com.focuslauncher.app.ui.SearchScreen
@@ -36,6 +35,7 @@ import com.focuslauncher.app.ui.SettingsScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,7 +73,6 @@ class MainActivity : ComponentActivity() {
 private sealed class Screen {
     data object Home : Screen()
     data object Settings : Screen()
-    data class ExpenseTracker(val returnTo: Screen = Home) : Screen()
     data class Search(
         val onPicked: ((AppInfo) -> Unit)? = null,
         val returnTo: Screen = Home,
@@ -86,7 +85,9 @@ private fun LauncherRoot() {
     val context = LocalContext.current
     // allApps is unfiltered (label overrides applied) so dial/gesture assignments keep
     // resolving even if the app gets hidden later; visibleApps/hiddenAppsList derive from it.
-    var allApps by remember { mutableStateOf(AppRepository.getInstalledApps(context)) }
+    // Querying + label-loading every installed app is the slowest thing the launcher does, so
+    // it never runs on the main thread — the home screen draws immediately and the list fills in.
+    var allApps by remember { mutableStateOf(emptyList<AppInfo>()) }
     var hiddenKeys by remember { mutableStateOf(HiddenAppsStore.getHiddenKeys(context)) }
     val visibleApps = remember(allApps, hiddenKeys) { allApps.filter { it.key !in hiddenKeys } }
     val hiddenAppsList = remember(allApps, hiddenKeys) { allApps.filter { it.key in hiddenKeys } }
@@ -103,100 +104,16 @@ private fun LauncherRoot() {
         )
     }
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
-
-    var expenseTrackerEnabled by remember { mutableStateOf(ExpenseRepository.isEnabled(context)) }
-    var expenseRefreshTick by remember { mutableStateOf(0) }
-    var isProcessingDashboardCommand by remember { mutableStateOf(false) }
-    var isAddingTransaction by remember { mutableStateOf(false) }
-    var lastPayment by remember { mutableStateOf(LastPaymentStore.get(context)) }
-    // Cheap no-op queries against empty tables when the tracker is off, so it's simpler to
-    // always compute these than to thread an enabled check through every call site.
-    val todayExpenseTotal = remember(expenseRefreshTick) { ExpenseRepository.getTodayTotal(context) }
-    val monthlyExpenseTotal = remember(expenseRefreshTick) { ExpenseRepository.getMonthTotal(context) }
-    val categoryTotalsMonth = remember(expenseRefreshTick) { ExpenseRepository.getCategoryTotalsMonth(context) }
+    // Set when the launcher resets itself back to Home while hidden, so pressing Home lands
+    // on the finished home screen instead of watching a crossfade play out.
+    // Plain (non-snapshot) flag: it's consumed inside transitionSpec, which mustn't trigger recomposition.
+    val skipNextTransition = remember { AtomicBoolean(false) }
     val coroutineScope = rememberCoroutineScope()
-    val smsPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        // READ_SMS is what the passive "last paid" reminder's resume-time inbox scan needs;
-        // RECEIVE_SMS (for live updates the moment a new message arrives) is requested
-        // alongside it but optional — the reminder still works via that scan if denied.
-        if (results[Manifest.permission.READ_SMS] == true) {
-            ExpenseRepository.setEnabled(context, true)
-            expenseTrackerEnabled = true
-            LastPaymentStore.refreshFromInbox(context)
-            lastPayment = LastPaymentStore.get(context)
-        }
-    }
-
-    fun openExpenseTracker(returnTo: Screen) {
-        screen = Screen.ExpenseTracker(returnTo)
-    }
-
-    // Both correcting and adding a transaction run real (slow) LLM inference — always off the
-    // main thread, never directly in a click handler.
-    fun correctTransaction(transactionId: Long, note: String) {
-        coroutineScope.launch {
-            withContext(Dispatchers.Default) {
-                ExpenseRepository.correctTransaction(context, transactionId, note)
-            }
-            expenseRefreshTick++
-        }
-    }
-
-    // Plain SQLite writes, no LLM — still off the main thread for consistency with every
-    // other repository write.
-    fun renameTransaction(transactionId: Long, newName: String) {
-        coroutineScope.launch {
-            withContext(Dispatchers.Default) {
-                ExpenseRepository.renameTransaction(context, transactionId, newName)
-            }
-            expenseRefreshTick++
-        }
-    }
-
-    fun modifyTransactionAmount(transactionId: Long, newAmount: Double) {
-        coroutineScope.launch {
-            withContext(Dispatchers.Default) {
-                ExpenseRepository.modifyTransactionAmount(context, transactionId, newAmount)
-            }
-            expenseRefreshTick++
-        }
-    }
-
-    fun deleteTransaction(transactionId: Long) {
-        coroutineScope.launch {
-            withContext(Dispatchers.Default) {
-                ExpenseRepository.deleteTransaction(context, transactionId)
-            }
-            expenseRefreshTick++
-        }
-    }
-
-    fun addTransaction(description: String) {
-        isAddingTransaction = true
-        coroutineScope.launch {
-            withContext(Dispatchers.Default) {
-                ExpenseRepository.addTransactionFromDescription(context, description)
-            }
-            isAddingTransaction = false
-            expenseRefreshTick++
-        }
-    }
-
-    fun runDashboardCommand(command: String) {
-        isProcessingDashboardCommand = true
-        coroutineScope.launch {
-            withContext(Dispatchers.Default) {
-                ExpenseRepository.runDashboardCommand(context, command)
-            }
-            isProcessingDashboardCommand = false
-            expenseRefreshTick++
-        }
-    }
 
     fun refreshApps() {
-        allApps = AppRepository.getInstalledApps(context)
+        coroutineScope.launch {
+            allApps = withContext(Dispatchers.Default) { AppRepository.getInstalledApps(context) }
+        }
     }
 
     fun setDialVerticalOffset(offsetDp: Float) {
@@ -225,20 +142,28 @@ private fun LauncherRoot() {
     fun resolveGestureApp(gesture: SwipeGesture): AppInfo? =
         gestureApps[gesture]?.let { key -> AppRepository.findByKey(allApps, key) }
 
+    LaunchedEffect(Unit) { refreshApps() }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                refreshApps()
-                refreshRadialGroups()
-                refreshGestureApps()
-                if (expenseTrackerEnabled) {
-                    // Catches the case where the app wasn't running to see the live broadcast
-                    // (first install, permission just granted) — cheap single-row inbox scan.
-                    LastPaymentStore.refreshFromInbox(context)
-                    lastPayment = LastPaymentStore.get(context)
+            when (event) {
+                // Reset while we're off-screen rather than on resume, so the switch back to
+                // Home has already happened by the time the launcher is visible again.
+                Lifecycle.Event.ON_STOP -> if (screen != Screen.Home) {
+                    skipNextTransition.set(true)
+                    screen = Screen.Home
                 }
-                screen = Screen.Home
+                Lifecycle.Event.ON_RESUME -> {
+                    refreshApps()
+                    refreshRadialGroups()
+                    refreshGestureApps()
+                    if (screen != Screen.Home) {
+                        skipNextTransition.set(true)
+                        screen = Screen.Home
+                    }
+                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -257,7 +182,11 @@ private fun LauncherRoot() {
         // A quick crossfade rather than a sliding "sheet" — screens should read as the
         // same persistent OS surface changing state, not as separate apps opening on top.
         transitionSpec = {
-            fadeIn(tween(140)) togetherWith fadeOut(tween(140))
+            if (skipNextTransition.getAndSet(false)) {
+                EnterTransition.None togetherWith ExitTransition.None
+            } else {
+                fadeIn(tween(140)) togetherWith fadeOut(tween(140))
+            }
         },
         label = "screenTransition"
     ) { currentScreen ->
@@ -280,14 +209,6 @@ private fun LauncherRoot() {
                         if (override != null) AppRepository.launchApp(context, override) else AppRepository.launchContacts(context)
                     },
                     onSwipeDown = { AppRepository.expandNotifications(context) },
-                    expenseTrackerEnabled = expenseTrackerEnabled,
-                    todayExpenseTotal = todayExpenseTotal,
-                    monthlyExpenseTotal = monthlyExpenseTotal,
-                    categoryTotalsMonth = categoryTotalsMonth,
-                    onOpenExpenseTracker = { openExpenseTracker(Screen.Home) },
-                    lastPayment = lastPayment,
-                    isAddingTransaction = isAddingTransaction,
-                    onAddTransaction = { description -> addTransaction(description) },
                     dialVerticalOffset = dialVerticalOffsetDp.dp,
                 )
             }
@@ -330,43 +251,7 @@ private fun LauncherRoot() {
                         HiddenAppsStore.setHidden(context, app.key, false)
                         refreshHidden()
                     },
-                    expenseTrackerEnabled = expenseTrackerEnabled,
-                    onToggleExpenseTracker = {
-                        if (expenseTrackerEnabled) {
-                            ExpenseRepository.setEnabled(context, false)
-                            expenseTrackerEnabled = false
-                        } else if (ExpenseRepository.hasSmsPermission(context)) {
-                            ExpenseRepository.setEnabled(context, true)
-                            expenseTrackerEnabled = true
-                            LastPaymentStore.refreshFromInbox(context)
-                            lastPayment = LastPaymentStore.get(context)
-                        } else {
-                            smsPermissionLauncher.launch(
-                                arrayOf(Manifest.permission.READ_SMS, Manifest.permission.RECEIVE_SMS)
-                            )
-                        }
-                    },
-                    onOpenExpenseTracker = { openExpenseTracker(Screen.Settings) },
                     onClose = { screen = Screen.Home },
-                )
-            }
-            is Screen.ExpenseTracker -> {
-                val todayTotal = remember(expenseRefreshTick) { ExpenseRepository.getTodayTotal(context) }
-                val categoryTotals = remember(expenseRefreshTick) { ExpenseRepository.getCategoryTotalsMonth(context) }
-                val dailyTotals = remember(expenseRefreshTick) { ExpenseRepository.getDailyTotals(context, 14) }
-                val recentTransactions = remember(expenseRefreshTick) { ExpenseRepository.getRecentTransactions(context) }
-                ExpenseTrackerScreen(
-                    todayTotal = todayTotal,
-                    categoryTotals = categoryTotals,
-                    dailyTotals = dailyTotals,
-                    recentTransactions = recentTransactions,
-                    isProcessingCommand = isProcessingDashboardCommand,
-                    onCorrectTransaction = { transactionId, note -> correctTransaction(transactionId, note) },
-                    onRenameTransaction = { transactionId, newName -> renameTransaction(transactionId, newName) },
-                    onModifyTransactionAmount = { transactionId, newAmount -> modifyTransactionAmount(transactionId, newAmount) },
-                    onDeleteTransaction = { transactionId -> deleteTransaction(transactionId) },
-                    onCommand = { command -> runDashboardCommand(command) },
-                    onClose = { screen = currentScreen.returnTo },
                 )
             }
             is Screen.Search -> {

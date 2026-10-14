@@ -4,6 +4,16 @@ A minimalist Android home-screen launcher built with Kotlin and Jetpack Compose.
 background, white text, monospace font, no app icons, no clutter — just a clock, two
 gesture-driven radial dials for quick app launching, and a full-text search.
 
+## Screenshots
+
+| Home | Upper dial | Bottom dial |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/home.png" width="240"> | <img src="docs/screenshots/dial-upper.png" width="240"> | <img src="docs/screenshots/dial-bottom.png" width="240"> |
+
+| Search | App actions (long-press) | Settings — dial setup |
+|:---:|:---:|:---:|
+| <img src="docs/screenshots/search.png" width="240"> | <img src="docs/screenshots/app-actions.png" width="240"> | <img src="docs/screenshots/settings.png" width="240"> |
+
 ## Features
 
 - **Dot-matrix clock** — a 5×3 segmented-display clock (`HH:mm`), with the date
@@ -41,9 +51,8 @@ gesture-driven radial dials for quick app launching, and a full-text search.
   on release.
   - Rename sets a launcher-only display name used everywhere the app appears.
   - Hide removes it from search while keeping any dial/gesture assignment working.
-- **Settings** (long-press the clock) — grouped into labeled sections, in order: Expense
-  tracker, Gestures, Dial position, Upper dial, Bottom dial, Hidden apps, each under a thin
-  divider. The two dial sections show a small radial replica of the actual on-screen dial —
+- **Settings** (long-press the clock) — grouped into labeled sections, in order: Gestures,
+  Dial position, Upper dial, Bottom dial, Hidden apps, each under a thin divider. The two dial sections show a small radial replica of the actual on-screen dial —
   the same arc, in the same corner — instead of a plain list, so it's immediately obvious
   which pull direction launches which app. Tap a node to assign/replace that slot;
   long-press a filled one to clear it. A slider above them nudges both dials up together
@@ -52,41 +61,10 @@ gesture-driven radial dials for quick app launching, and a full-text search.
 - Status bar is hidden, and system window/activity-open animations are disabled for this
   activity, so the home screen reads as the persistent OS shell rather than an app that
   keeps opening and closing on top of it.
-- **Expense tracker** (optional — enable under Settings → Expense tracker, now the first
-  section) — every transaction is logged manually, by describing it in plain language; a
-  small LLM running entirely on-device interprets the description into an amount, kind,
-  and category — nothing leaves the device, no network calls, no login, no automatic SMS
-  classification.
-  - **On the home screen itself**, below the calendar block: today's total as the
-    headline with this month's total as a smaller line beneath it, a bar graph of
-    categories, and a `>`-prefixed breakdown line per category. Below that, a single
-    quick-add prompt — tap it and it animates to the center of the screen with the rest
-    dimmed, auto-focused and keyboard up (so the keyboard never covers it); type what you
-    spent on ("200 on lunch") and Enter logs it immediately via the on-device model, no
-    confirmation step. Below the prompt, a subtle grey line reminds you of the last
-    bank/UPI debit SMS seen ("Last paid ₹220 · CAFE COFFEE DAY") — purely informational,
-    never written to the tracker on its own; it's there so nothing gets forgotten, not to
-    track anything automatically.
-  - **The dashboard** (Settings → Open dashboard, or tap the home screen summary) adds:
-    a free-text command bar at the top — one instruction to the model that can add a
-    transaction (cash, say), delete one, or retag one, matched against a plain-language
-    description rather than picking from a menu — today's total, a per-category breakdown
-    with animated bars, a 14-day line graph, and the recent transaction list. Tap a
-    transaction for the inline-retag prompt ("what was this actually?"); hold one down for
-    a direct Rename / Modify price / Delete action panel — no model call needed for those.
-  - **Settings** also gets a model download row (shows live progress, a reason if it
-    stalls, and a cancel action — the download isn't Wi-Fi-restricted, since that silently
-    stalls forever if the device isn't on a network Android recognizes as Wi-Fi) and an
-    AI mode picker (Low / Medium / High) that controls how many CPU threads inference is
-    allowed to use, resolved against the actual device's core count rather than a fixed
-    number.
-  - A small model running fully offline won't always get a judgment call right (category
-    is the one it's most often unsure about) — tap any transaction on the dashboard and
-    say what it actually was to fix it.
-  - Bank SMS formats vary a lot and there's no universal standard, so parsing (in
-    `SmsTransactionParser.kt`, used only for the passive "last paid" reminder) covers
-    common Indian bank/UPI debit and credit phrasing — extend its regexes for formats it
-    doesn't already catch.
+- **Fast to surface** — pressing Home never waits on anything: the installed-app list,
+  screen time, and calendar are all loaded off the main thread, and if you'd left the
+  launcher on Search/Settings it resets to Home while hidden, so there's no crossfade to sit
+  through when you come back.
 
 ## Project structure
 
@@ -101,48 +79,27 @@ app/src/main/java/com/focuslauncher/app/
 ├── DeviceUsage.kt                  — today's screen time via UsageStatsManager
 ├── CalendarRepository.kt           — next upcoming event via the device's calendar provider
 ├── PackageChangeReceiver.kt        — refreshes the app list on install/uninstall
-├── ExpenseCategory.kt              — the 5 fixed spend categories
-├── TransactionKind.kt              — expense/income + who resolved it
-├── ExpenseDbHelper.kt              — SQLite schema: transactions (manually logged only)
-├── SmsTransactionParser.kt         — regex parsing of bank/UPI debit+credit SMS
-├── SmsReceivedReceiver.kt          — updates the passive "last paid" reminder on a new SMS
-├── LastPaymentStore.kt             — the last-seen-debit reminder (SharedPreferences, no DB)
-├── ExpenseRepository.kt            — manual transaction CRUD, totals, dashboard queries
-├── ModelDownloader.kt              — fetches the GGUF model via DownloadManager, no login
-├── ClassifierPerformanceStore.kt   — the Low/Medium/High AI mode → CPU thread count
-├── LlamaModelLoader.kt             — shared "is the model loaded" check for both LLM features
-├── LlamaEngine.kt                  — JNI bridge to the vendored llama.cpp (see cpp/)
-├── TransactionClassifier.kt        — free-text retag of an existing transaction
-├── DashboardCommandInterpreter.kt  — free-text add/remove/retag, shared by the quick-add
-│                                     prompt and the dashboard's command bar
 └── ui/
     ├── Theme.kt                 — black/white/grey palette, monospace typography
     ├── DotMatrixClock.kt        — the segmented clock display
-    ├── HomeScreen.kt            — clock, gesture handling, the two dials, the quick-add prompt
+    ├── HomeScreen.kt            — clock, gesture handling, the two dials
     ├── RadialAppMenu.kt         — the pull-and-rotate dial menu
     ├── ScrambleText.kt          — hacker-style decrypt text animation
     ├── SearchScreen.kt          — full-screen search overlay + app action menu
-    ├── SettingsScreen.kt        — dial slot, gesture, hidden-app, expense-tracker config
-    └── ExpenseTrackerScreen.kt  — spend dashboard: command bar, totals, graph, recent log
-
-app/src/main/cpp/                — vendored llama.cpp (MIT) + jni_bridge.cpp, CMake-built
-app/src/main/assets/             — GBNF grammars constraining the model's JSON output
+    └── SettingsScreen.kt        — dial slot, gesture, hidden-app config
 ```
 
 ## Building
 
-Requires Android Studio (or a local Gradle + Android SDK install) plus the Android NDK and
-CMake, for the vendored llama.cpp native build. `minSdk 26`, `targetSdk 34`.
+Requires Android Studio (or a local Gradle + Android SDK install). `minSdk 26`, `targetSdk 34`.
 
-1. Open the project in Android Studio — it will fetch the Gradle wrapper, NDK, and CMake
-   automatically on first sync. Alternatively, with Gradle, the Android SDK, and NDK
-   `27.2.12479018` installed locally, create a `local.properties` file pointing at your SDK
-   (`sdk.dir=/path/to/Android/sdk`) and run `gradle assembleDebug`.
-2. Install the debug APK on a device or emulator and set it as the default launcher from
-   Android Settings.
-3. The on-device model (Qwen2.5-1.5B-Instruct, ~1 GB) isn't bundled in the APK — enable
-   the expense tracker, then download it from Settings. The quick-add prompt and dashboard
-   command bar can't interpret anything until the download completes.
+1. Open the project in Android Studio, or with Gradle and the Android SDK installed locally,
+   create a `local.properties` file pointing at your SDK (`sdk.dir=/path/to/Android/sdk`).
+2. Build the **release** variant — `gradle assembleRelease` — and install
+   `app/build/outputs/apk/release/app-release.apk`. It's R8-shrunk (under 1 MB) and signed
+   with the local debug key, so it installs directly. Prefer it over the debug build for
+   daily use: debug Compose builds are unoptimized and noticeably slower to draw.
+3. Set it as the default launcher from Android Settings.
 
 ### Permissions
 
@@ -159,26 +116,12 @@ CMake, for the vendored llama.cpp native build. `minSdk 26`, `targetSdk 34`.
   notification shade on swipe-down, the same way every other custom launcher does (there's
   no public API for this, just a long-standing reflection call against the hidden
   `StatusBarManager`).
-- `READ_SMS` / `RECEIVE_SMS` — only used if the expense tracker is enabled, requested at
-  runtime from the Settings toggle. The app never sends a message; it only reads/reacts to
-  inbox messages that parse as a bank/UPI debit or credit alert, purely to populate the
-  passive "last paid" reminder — nothing from SMS is ever written to the tracked expense
-  log. `RECEIVE_SMS` is what lets that reminder update the moment a new message arrives
-  rather than waiting for the next time the app is opened — it's requested alongside
-  `READ_SMS` but optional, the reminder still works via a resume-time inbox scan if only
-  that one is denied.
-- `INTERNET` — used for exactly one thing: downloading the on-device model file from
-  Hugging Face (a public, ungated URL, no account/login/token involved). Once downloaded,
-  classification itself makes no network calls at all.
 
 ## Known limitations
 
 - Fonts: body text uses Android's built-in monospace typeface (no network dependency).
 - Screen time requires the manual Usage Access grant described above; until granted, the
   home screen shows "Enable screen time" instead of a duration.
-- The on-device model (Qwen2.5-1.5B, quantized) is small enough to run on a phone CPU but
-  isn't always right — category is the judgment call it's most often unsure about. Tap any
-  transaction on the dashboard and say what it actually was to fix it.
 - "Close" is a best-effort background-process kill (`killBackgroundProcesses`) — Android
   doesn't let one app force-stop another's foreground activity, so this mainly helps with
   apps already in the background.

@@ -1,8 +1,0 @@
-# Constrains the retag-by-note model to emit only valid, schema-exact JSON — a single flat
-# object with just the two fields that matter for a correction.
-root ::= "{" ws "\"kind\":" ws kind "," ws "\"category\":" ws category ws "}"
-
-kind ::= "\"EXPENSE\"" | "\"INCOME\""
-category ::= "\"FOOD\"" | "\"TRANSPORT\"" | "\"ESSENTIALS\"" | "\"EXTRAS\"" | "\"SUBSCRIPTION\"" | "null"
-
-ws ::= [ \t\n]*
